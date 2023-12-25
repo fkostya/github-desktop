@@ -726,7 +726,7 @@ function getPlaceholderText(state: ICompareState) {
   } else if (formState.kind === HistoryTabMode.History) {
     return __DARWIN__
       ? 'Select Branch to Compare…'
-      : 'Select branch to compare…'
+      : 'Select(use /a: to search by author) branch to compare…'
   } else {
     return undefined
   }

@@ -44,8 +44,17 @@ export enum StartPoint {
   UpstreamDefaultBranch = 'UpstreamDefaultBranch',
 }
 
+/** Basic data about the commit on the branch. */
+export interface IBranch {
+  readonly name: string
+  readonly upstream: string | null
+  readonly tip: IBranchTip
+  readonly type: BranchType
+  readonly ref: string
+}
+
 /** A branch as loaded from Git. */
-export class Branch {
+export class Branch implements IBranch {
   /**
    * A branch as loaded from Git.
    *

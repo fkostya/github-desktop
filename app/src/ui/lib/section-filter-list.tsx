@@ -623,8 +623,13 @@ export class SectionFilterList<
 }
 
 export function getText<T extends IFilterListItem>(
-  item: T
+  item: T,
+  query?: string
 ): ReadonlyArray<string> {
+  switch ((query || '').trim().substring(0, (query || '').indexOf(':') + 1)) {
+    case '/a:':
+      return new Array<string>(item.branch?.tip?.author?.name || '')
+  }
   return item['text']
 }
 

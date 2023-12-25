@@ -13,6 +13,7 @@ import { Row } from '../lib/row'
 
 import { match, IMatch, IMatches } from '../../lib/fuzzy-find'
 import { AriaLiveContainer } from '../accessibility/aria-live-container'
+import { IBranch } from '../../models/branch'
 
 /** An item in the filter list. */
 export interface IFilterListItem {
@@ -21,6 +22,8 @@ export interface IFilterListItem {
 
   /** A unique identifier for the item. */
   readonly id: string
+
+  readonly branch?: IBranch
 }
 
 /** A group of items in the list. */
