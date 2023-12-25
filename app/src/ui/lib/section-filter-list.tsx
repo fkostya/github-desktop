@@ -624,13 +624,12 @@ export class SectionFilterList<
 
 export function getText<T extends IFilterListItem>(
   item: T,
-  query?: string
+  query: string
 ): ReadonlyArray<string> {
-  switch ((query || '').trim().substring(0, (query || '').indexOf(':') + 1)) {
-    case '/a:':
-      return new Array<string>(item.branch?.tip?.author?.name || '')
+  if (query === null || !query.startsWith('@')) {
+    return item['text']
   }
-  return item['text']
+  return new Array<string>(item.branch?.tip?.author?.name || '')
 }
 
 function getFirstVisibleRow<T extends IFilterListItem>(

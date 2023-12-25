@@ -65,7 +65,7 @@ describe('fuzzy find', () => {
 
   it('should find matching item when filtering by branch author', () => {
     const func = (item: IFilterListItem, query: string) => getText(item, query)
-    const results = match('/a:damaneice', items, func)
+    const results = match('@damaneice', items, func)
 
     expect(results).toHaveLength(1)
     expect(results[0].item.branch?.tip.author.name).toContain('damaneice')
