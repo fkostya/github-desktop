@@ -27,7 +27,7 @@ export function match<T>(
 ): ReadonlyArray<IMatch<T>> {
   // matching `query` against itself is a perfect match.
   const maxScore = score(query, query, 1)
-  const searchByAuthor = query.startsWith('@')// use @ to search by author name
+  const searchByAuthor = query.startsWith('@') // use @ to search by author name
   const result = items
     .map((item): IMatch<T> => {
       const matches: Array<ReadonlyArray<number>> = []
@@ -36,7 +36,9 @@ export function match<T>(
         matches.push(
           fuzzAldrin.match(
             text,
-            searchByAuthor === false ? query : query.substring(1, query.length).trim()
+            searchByAuthor === false
+              ? query
+              : query.substring(1, query.length).trim()
           )
         )
       })
