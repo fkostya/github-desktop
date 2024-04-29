@@ -213,6 +213,8 @@ const extensionModes: ReadonlyArray<IModeDefinition> = [
     install: () => import('codemirror/mode/python/python'),
     mappings: {
       '.py': 'text/x-python',
+      '.pyi': 'text/x-python',
+      '.vpy': 'text/x-python',
     },
   },
   {
@@ -428,6 +430,12 @@ const extensionModes: ReadonlyArray<IModeDefinition> = [
     install: () => import('codemirror/mode/dart/dart'),
     mappings: {
       '.dart': 'application/dart',
+    },
+  },
+  {
+    install: () => import('codemirror-mode-zig'),
+    mappings: {
+      '.zig': 'text/x-zig',
     },
   },
   {
