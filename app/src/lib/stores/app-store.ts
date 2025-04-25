@@ -11,7 +11,7 @@ import {
   SignInStore,
   UpstreamRemoteName,
 } from '.'
-import { Account } from '../../models/account'
+import { Account, isDotComAccount } from '../../models/account'
 import { AppMenu, IMenu } from '../../models/app-menu'
 import { Author } from '../../models/author'
 import { Branch, BranchType, IAheadBehind } from '../../models/branch'
@@ -95,13 +95,13 @@ import {
 import {
   API,
   getAccountForEndpoint,
-  getDotComAPIEndpoint,
   IAPIOrganization,
   getEndpointForRepository,
   IAPIFullRepository,
   IAPIComment,
   IAPIRepoRuleset,
   deleteToken,
+  IAPICreatePushProtectionBypassResponse,
 } from '../api'
 import { shell } from '../app-shell'
 import {
@@ -185,6 +185,7 @@ import {
   checkoutCommit,
   getRemoteURL,
   getGlobalConfigPath,
+  getFilesDiffText,
 } from '../git'
 import {
   installGlobalLFSFilters,
@@ -243,7 +244,10 @@ import {
 } from './updates/changes-state'
 import { ManualConflictResolution } from '../../models/manual-conflict-resolution'
 import { BranchPruner } from './helpers/branch-pruner'
-import { enableCustomIntegration } from '../feature-flag'
+import {
+  enableCommitMessageGeneration,
+  enableCustomIntegration,
+} from '../feature-flag'
 import { Banner, BannerType } from '../../models/banner'
 import { ComputedAction } from '../../models/computed-action'
 import {
@@ -342,6 +346,8 @@ import {
   ICustomIntegration,
   migratedCustomIntegration,
 } from '../custom-integration'
+import { updateStore } from '../../ui/lib/update-store'
+import { BypassReasonType } from '../../ui/secret-scanning/bypass-push-protection-dialog'
 
 const LastSelectedRepositoryIDKey = 'last-selected-repository-id'
 
@@ -446,8 +452,8 @@ export const underlineLinksDefault = true
 export const showDiffCheckMarksDefault = true
 export const showDiffCheckMarksKey = 'diff-check-marks-visible'
 
-export const canFilterChangesDefault = false
-export const canFilterChangesKey = 'can-filter-changes'
+export const commitMessageGenerationDisclaimerLastSeenKey =
+  'commit-message-generation-disclaimer-last-seen'
 
 export class AppStore extends TypedBaseStore<IAppState> {
   private readonly gitStoreCache: GitStoreCache
@@ -599,7 +605,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
   private underlineLinks: boolean = underlineLinksDefault
 
-  private canFilterChanges: boolean = canFilterChangesDefault
+  private commitMessageGenerationDisclaimerLastSeen: number | null = null
 
   public constructor(
     private readonly gitHubUserStore: GitHubUserStore,
@@ -914,6 +920,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
     this.apiRepositoriesStore.onDidUpdate(() => this.emitUpdate())
     this.apiRepositoriesStore.onDidError(error => this.emitError(error))
+
+    // updateStore is a global, App.tsx handles most of it but we carry the
+    // UpdateState in the AppState so we need to emit whenever it updates.
+    updateStore.onDidChange(() => this.emitUpdate())
   }
 
   /** Load the emoji from disk. */
@@ -1088,7 +1098,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
       cachedRepoRulesets: this.cachedRepoRulesets,
       underlineLinks: this.underlineLinks,
       showDiffCheckMarks: this.showDiffCheckMarks,
-      canFilterChanges: this.canFilterChanges,
+      updateState: updateStore.state,
+      commitMessageGenerationDisclaimerLastSeen:
+        this.commitMessageGenerationDisclaimerLastSeen,
     }
   }
 
@@ -2315,10 +2327,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
       showDiffCheckMarksDefault
     )
 
-    this.canFilterChanges = getBoolean(
-      canFilterChangesKey,
-      canFilterChangesDefault
-    )
+    this.commitMessageGenerationDisclaimerLastSeen =
+      getNumber(commitMessageGenerationDisclaimerLastSeenKey) ?? null
 
     this.emitUpdateNow()
 
@@ -3327,6 +3337,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
       this.statsStore.increment('partialCommits')
     }
 
+    if (context.messageGeneratedByCopilot === true) {
+      this.statsStore.increment('generateCommitMessageUsedVerbatimCount')
+    }
+
     if (isAmend) {
       this.statsStore.recordAmendCommitSuccessful(selectedFiles.length > 0)
     }
@@ -3339,7 +3353,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
     const account = getAccountForRepository(this.accounts, repository)
     if (repository.gitHubRepository !== null) {
       if (account !== null) {
-        if (account.endpoint === getDotComAPIEndpoint()) {
+        if (isDotComAccount(account)) {
           this.statsStore.increment('dotcomCommits')
         } else {
           this.statsStore.increment('enterpriseCommits')
@@ -4705,6 +4719,31 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
   }
 
+  private async withIsGeneratingCommitMessage(
+    repository: Repository,
+    fn: () => Promise<boolean>
+  ): Promise<boolean> {
+    const state = this.repositoryStateCache.get(repository)
+    // ensure the user doesn't try and commit again
+    if (state.isGeneratingCommitMessage) {
+      return false
+    }
+
+    this.repositoryStateCache.update(repository, () => ({
+      isGeneratingCommitMessage: true,
+    }))
+    this.emitUpdate()
+
+    try {
+      return await fn()
+    } finally {
+      this.repositoryStateCache.update(repository, () => ({
+        isGeneratingCommitMessage: false,
+      }))
+      this.emitUpdate()
+    }
+  }
+
   private async withPushPullFetch(
     repository: Repository,
     fn: () => Promise<void>
@@ -5354,6 +5393,80 @@ export class AppStore extends TypedBaseStore<IAppState> {
   ): Promise<void> {
     const gitStore = this.gitStoreCache.get(repository)
     return gitStore.setCommitMessage(message)
+  }
+
+  public async _promptOverrideWithGeneratedCommitMessage(
+    repository: Repository,
+    filesSelected: ReadonlyArray<WorkingDirectoryFileChange>
+  ): Promise<void> {
+    return this._showPopup({
+      type: PopupType.GenerateCommitMessageOverrideWarning,
+      repository,
+      filesSelected,
+    })
+  }
+
+  public _updateCommitMessageGenerationDisclaimerLastSeen(): void {
+    this.commitMessageGenerationDisclaimerLastSeen = Date.now()
+    setNumber(
+      commitMessageGenerationDisclaimerLastSeenKey,
+      this.commitMessageGenerationDisclaimerLastSeen
+    )
+    this.emitUpdate()
+  }
+
+  public async _generateCommitMessage(
+    repository: Repository,
+    filesSelected: ReadonlyArray<WorkingDirectoryFileChange>
+  ): Promise<boolean> {
+    const account = this.getState().accounts.find(enableCommitMessageGeneration)
+
+    if (!account) {
+      return false
+    }
+
+    if (
+      !this.commitMessageGenerationDisclaimerLastSeen ||
+      offsetFromNow(-30, 'days') >
+        this.commitMessageGenerationDisclaimerLastSeen
+    ) {
+      await this._showPopup({
+        type: PopupType.GenerateCommitMessageDisclaimer,
+        repository,
+        filesSelected,
+      })
+      return false
+    }
+
+    return this.withIsGeneratingCommitMessage(repository, async () => {
+      const diff = await getFilesDiffText(repository, filesSelected)
+      if (!diff) {
+        return false
+      }
+
+      const api = API.fromAccount(account)
+      try {
+        const response = await api.getDiffChangesCommitMessage(diff)
+
+        this._setCommitMessage(repository, {
+          summary: response.title,
+          description: response.description,
+          timestamp: Date.now(),
+          generatedByCopilot: true,
+        })
+
+        this.statsStore.increment('generateCommitMessageCount')
+      } catch (e) {
+        this.emitError(
+          new ErrorWithMetadata(e, {
+            repository,
+          })
+        )
+        return false
+      }
+
+      return true
+    })
   }
 
   /**
@@ -8155,12 +8268,58 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
   }
 
-  public _updateCanFilterChanges(canFilterChanges: boolean) {
-    if (canFilterChanges !== this.canFilterChanges) {
-      this.canFilterChanges = canFilterChanges
-      setBoolean(canFilterChangesKey, canFilterChanges)
-      this.emitUpdate()
+  public _setChangesListFilterText(repository: Repository, filterText: string) {
+    this.repositoryStateCache.updateChangesState(repository, () => ({
+      filterText,
+    }))
+    this.emitUpdate()
+  }
+
+  public _setIncludedChangesInCommitFilter(
+    repository: Repository,
+    includedChangesInCommitFilter: boolean
+  ) {
+    this.repositoryStateCache.updateChangesState(repository, () => ({
+      includedChangesInCommitFilter,
+    }))
+    this.emitUpdate()
+  }
+
+  public async _createPushProtectionBypass(
+    reason: BypassReasonType,
+    placeholderId: string,
+    bypassURL: string
+  ): Promise<IAPICreatePushProtectionBypassResponse | null> {
+    const repository = this.selectedRepository
+    if (
+      repository === null ||
+      repository instanceof CloningRepository ||
+      isRepositoryWithGitHubRepository(repository) === false
+    ) {
+      log.error('[_createPushProtectionBypass] - No GitHub repository selected')
+      return null
     }
+
+    const { endpoint, name, owner } = repository.gitHubRepository
+
+    const account = getAccountForEndpoint(this.accounts, endpoint)
+
+    if (account === null) {
+      log.error(
+        `[_createPushProtectionBypass] - No account found for endpoint - ${endpoint}`
+      )
+      return null
+    }
+
+    const api = API.fromAccount(account)
+
+    return api.createPushProtectionBypass(
+      owner.login,
+      name,
+      reason,
+      placeholderId,
+      bypassURL
+    )
   }
 }
 

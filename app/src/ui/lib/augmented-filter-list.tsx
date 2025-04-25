@@ -147,11 +147,9 @@ interface IAugmentedSectionFilterListProps<T extends IFilterListItem> {
   readonly renderPostFilter?: () => JSX.Element | null
 
   /**
-   * Called to render content after the filter input <Row> element.
-   * - Can be used when you want content between the filter input and the filter
-   *   list items.
+   * Called to to allow providing a custom filter row as opposed to the default one.
    */
-  readonly renderPostFilterRow?: () => JSX.Element | null
+  readonly renderCustomFilterRow?: () => JSX.Element | null
 
   /** Called when there are no items to render.  */
   readonly renderNoItems?: () => JSX.Element | null
@@ -211,8 +209,9 @@ interface IAugmentedSectionFilterListProps<T extends IFilterListItem> {
    */
   readonly setScrollTop?: number
 
-  /** The aria-label attribute for the list component. */
-  readonly ariaLabel?: string
+  /** A message to be announced after the no results message - Used to pass in
+   * any messaging shown to visual users */
+  readonly postNoResultsMessage?: string
 
   /**
    * This prop defines the behaviour of the selection of items within this list.
@@ -357,11 +356,16 @@ export class AugmentedSectionFilterList<
 
     const itemRows = this.state.rows.flat().filter(row => row.kind === 'item')
     const resultsPluralized = itemRows.length === 1 ? 'result' : 'results'
-    const screenReaderMessage = `${itemRows.length} ${resultsPluralized}`
+    const postNoResultsMessage =
+      itemRows.length === 0 ? this.props.postNoResultsMessage : ''
+    const screenReaderMessage = `${itemRows.length} ${resultsPluralized} ${postNoResultsMessage}`
 
+    const tracked = `${this.state.filterValue} ${
+      this.props.filterMethod ? 'fm' : ''
+    }`
     return (
       <AriaLiveContainer
-        trackedUserInput={this.state.filterValue}
+        trackedUserInput={tracked}
         message={screenReaderMessage}
       />
     )
@@ -370,6 +374,10 @@ export class AugmentedSectionFilterList<
   public renderFilterRow() {
     if (this.props.hideFilterRow === true) {
       return null
+    }
+
+    if (this.props.renderCustomFilterRow) {
+      return this.props.renderCustomFilterRow()
     }
 
     return (
@@ -388,10 +396,6 @@ export class AugmentedSectionFilterList<
         {this.props.renderPreList ? this.props.renderPreList() : null}
 
         {this.renderFilterRow()}
-
-        {this.props.renderPostFilterRow
-          ? this.props.renderPostFilterRow()
-          : null}
 
         <div className="filter-list-container">{this.renderContent()}</div>
       </div>
@@ -482,8 +486,8 @@ export class AugmentedSectionFilterList<
           }}
           onScroll={this.props.onScroll}
           setScrollTop={this.props.setScrollTop}
-          ariaLabel={this.props.ariaLabel}
           selectionMode={this.props.selectionMode}
+          getSectionAriaLabel={this.getSectionAriaLabel}
         />
       )
     }
@@ -513,6 +517,14 @@ export class AugmentedSectionFilterList<
     return groupAriaLabel !== undefined
       ? `${itemAriaLabel}, ${groupAriaLabel}`
       : itemAriaLabel
+  }
+
+  private getSectionAriaLabel = (section: number) => {
+    const groupAriaLabel = this.props.getGroupAriaLabel?.(
+      this.state.groups[section]
+    )
+
+    return groupAriaLabel !== undefined ? groupAriaLabel : undefined
   }
 
   private renderRow = (index: RowIndexPath) => {
@@ -710,7 +722,7 @@ export class AugmentedSectionFilterList<
     }
   }
 
-  private onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+  public onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     const list = this.list
     const key = event.key
 
@@ -821,6 +833,7 @@ function createStateUpdate<T extends IFilterListItem>(
   const selectedRows = []
   let section = 0
   const groupIndices = []
+  let filterValueChanged = state?.filterValueChanged ? true : filter.length > 0
 
   for (const [idx, group] of props.groups.entries()) {
     const groupRows = new Array<IFilterListRow<T>>()
@@ -836,6 +849,10 @@ function createStateUpdate<T extends IFilterListItem>(
           matches: { title: [], subtitle: [] },
           item,
         }))
+
+    if (group.items.length !== items.length) {
+      filterValueChanged = true
+    }
 
     if (!items.length) {
       continue
@@ -867,11 +884,6 @@ function createStateUpdate<T extends IFilterListItem>(
     // select the first visible item.
     selectedRows.push(getFirstVisibleRow(rows))
   }
-
-  // Stay true if already set, otherwise become true if the filter has content
-  const filterValueChanged = state?.filterValueChanged
-    ? true
-    : filter.length > 0
 
   return {
     rows: rows,

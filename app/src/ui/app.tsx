@@ -18,7 +18,6 @@ import { RetryAction } from '../models/retry-actions'
 import { FetchType } from '../models/fetch'
 import { shouldRenderApplicationMenu } from './lib/features'
 import { matchExistingRepository } from '../lib/repository-matching'
-import { getDotComAPIEndpoint } from '../lib/api'
 import { getVersion, getName } from './lib/app-proxy'
 import {
   getOS,
@@ -36,7 +35,11 @@ import {
 import { Branch } from '../models/branch'
 import { PreferencesTab } from '../models/preferences'
 import { findItemByAccessKey, itemIsSelectable } from '../models/app-menu'
-import { Account } from '../models/account'
+import {
+  Account,
+  isDotComAccount,
+  isEnterpriseAccount,
+} from '../models/account'
 import { TipState } from '../models/tip'
 import { CloneRepositoryTab } from '../models/clone-repository-tab'
 import { CloningRepository } from '../models/cloning-repository'
@@ -181,6 +184,19 @@ import { isCertificateErrorSuppressedFor } from '../lib/suppress-certificate-err
 import { webUtils } from 'electron'
 import { showTestUI } from './lib/test-ui-components/test-ui-components'
 import { ConfirmCommitFilteredChanges } from './changes/confirm-commit-filtered-changes-dialog'
+import { AboutTestDialog } from './about/about-test-dialog'
+import { enableMultipleEnterpriseAccounts } from '../lib/feature-flag'
+import {
+  ISecretScanResult,
+  PushProtectionErrorDialog,
+} from './secret-scanning/push-protection-error-dialog'
+import { GenerateCommitMessageOverrideWarning } from './generate-commit-message/generate-commit-message-override-warning'
+import { GenerateCommitMessageDisclaimer } from './generate-commit-message/generate-commit-message-disclaimer'
+import { IAPICreatePushProtectionBypassResponse } from '../lib/api'
+import {
+  BypassPushProtectionDialog,
+  BypassReasonType,
+} from './secret-scanning/bypass-push-protection-dialog'
 
 const MinuteInMilliseconds = 1000 * 60
 const HourInMilliseconds = MinuteInMilliseconds * 60
@@ -249,6 +265,17 @@ export class App extends React.Component<IAppProps, IAppState> {
   private getOnPopupDismissedFn = memoizeOne((popupId: string) => {
     return () => this.onPopupDismissed(popupId)
   })
+
+  /**
+   * Helper method to mimic the behavior prior to us supporting multiple
+   * enterprise accounts. Takes a list of accounts and returns the first
+   * dotcom account (if any) followed by the first enterprise account (if any)
+   */
+  private oneAccountPerKind = memoizeOne((accounts: ReadonlyArray<Account>) =>
+    [accounts.find(isDotComAccount), accounts.find(isEnterpriseAccount)].filter(
+      x => x !== undefined
+    )
+  )
 
   public constructor(props: IAppProps) {
     super(props)
@@ -607,20 +634,6 @@ export class App extends React.Component<IAppProps, IAppState> {
     updateStore.checkForUpdates(inBackground, skipGuidCheck)
   }
 
-  private getDotComAccount(): Account | null {
-    const dotComAccount = this.state.accounts.find(
-      a => a.endpoint === getDotComAPIEndpoint()
-    )
-    return dotComAccount || null
-  }
-
-  private getEnterpriseAccount(): Account | null {
-    const enterpriseAccount = this.state.accounts.find(
-      a => a.endpoint !== getDotComAPIEndpoint()
-    )
-    return enterpriseAccount || null
-  }
-
   private updateBranchWithContributionTargetBranch() {
     const { selectedState } = this.state
     if (
@@ -801,9 +814,10 @@ export class App extends React.Component<IAppProps, IAppState> {
   }
 
   private showCreateTutorialRepositoryPopup = () => {
-    const account = this.getDotComAccount() || this.getEnterpriseAccount()
+    const account =
+      this.state.accounts.find(isDotComAccount) ?? this.state.accounts.at(0)
 
-    if (account === null) {
+    if (!account) {
       return
     }
 
@@ -1526,7 +1540,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             key="preferences"
             initialSelectedTab={popup.initialSelectedTab}
             dispatcher={this.props.dispatcher}
-            dotComAccount={this.getDotComAccount()}
+            accounts={this.state.accounts}
             confirmRepositoryRemoval={
               this.state.askForConfirmationOnRepositoryRemoval
             }
@@ -1552,7 +1566,6 @@ export class App extends React.Component<IAppProps, IAppState> {
             notificationsEnabled={this.state.notificationsEnabled}
             optOutOfUsageTracking={this.state.optOutOfUsageTracking}
             useExternalCredentialHelper={this.state.useExternalCredentialHelper}
-            enterpriseAccount={this.getEnterpriseAccount()}
             repository={repository}
             onDismissed={onPopupDismissedFn}
             selectedShell={this.state.selectedShell}
@@ -1566,7 +1579,6 @@ export class App extends React.Component<IAppProps, IAppState> {
             onEditGlobalGitConfig={this.editGlobalGitConfig}
             underlineLinks={this.state.underlineLinks}
             showDiffCheckMarks={this.state.showDiffCheckMarks}
-            canFilterChanges={this.state.canFilterChanges}
           />
         )
       case PopupType.RepositorySettings: {
@@ -1623,8 +1635,7 @@ export class App extends React.Component<IAppProps, IAppState> {
         return (
           <CloneRepository
             key="clone-repository"
-            dotComAccount={this.getDotComAccount()}
-            enterpriseAccount={this.getEnterpriseAccount()}
+            accounts={this.state.accounts}
             initialURL={popup.initialURL}
             onDismissed={onPopupDismissedFn}
             dispatcher={this.props.dispatcher}
@@ -1694,6 +1705,8 @@ export class App extends React.Component<IAppProps, IAppState> {
             onCheckForNonStaggeredUpdates={this.onCheckForNonStaggeredUpdates}
             onShowAcknowledgements={this.showAcknowledgements}
             onShowTermsAndConditions={this.showTermsAndConditions}
+            updateState={this.state.updateState}
+            onQuitAndInstall={this.onQuitAndInstall}
           />
         )
       case PopupType.PublishRepository:
@@ -2483,8 +2496,70 @@ export class App extends React.Component<IAppProps, IAppState> {
           />
         )
       }
+      case PopupType.TestAbout:
+        return (
+          <AboutTestDialog
+            key="about"
+            onDismissed={onPopupDismissedFn}
+            onShowAcknowledgements={this.showAcknowledgements}
+            onShowTermsAndConditions={this.showTermsAndConditions}
+          />
+        )
+      case PopupType.PushProtectionError:
+        return (
+          <PushProtectionErrorDialog
+            key="push-protection-error"
+            secrets={popup.secrets}
+            bypassPushProtection={this.openBypassPushProtection}
+            onDismissed={onPopupDismissedFn}
+          />
+        )
+      case PopupType.BypassPushProtection:
+        return (
+          <BypassPushProtectionDialog
+            key="bypass-push-protection"
+            secret={popup.secret}
+            bypassPushProtection={popup.bypassPushProtection}
+            onDismissed={this.onDismissBypassPushProtection(
+              popup.id,
+              popup.onDismissed
+            )}
+          />
+        )
+      case PopupType.GenerateCommitMessageOverrideWarning: {
+        return (
+          <GenerateCommitMessageOverrideWarning
+            key="generate-commit-message-override-warning"
+            dispatcher={this.props.dispatcher}
+            repository={popup.repository}
+            filesSelected={popup.filesSelected}
+            onDismissed={onPopupDismissedFn}
+          />
+        )
+      }
+      case PopupType.GenerateCommitMessageDisclaimer: {
+        return (
+          <GenerateCommitMessageDisclaimer
+            key="generate-commit-message-disclaimer"
+            dispatcher={this.props.dispatcher}
+            repository={popup.repository}
+            filesSelected={popup.filesSelected}
+            onDismissed={onPopupDismissedFn}
+          />
+        )
+      }
       default:
         return assertNever(popup, `Unknown popup type: ${popup}`)
+    }
+  }
+
+  private onDismissBypassPushProtection = (
+    popup: string,
+    popupDismiss: () => void
+  ) => {
+    return () => {
+      popupDismiss()
+      this.onPopupDismissed(popup)
     }
   }
 
@@ -2502,6 +2577,47 @@ export class App extends React.Component<IAppProps, IAppState> {
     }
 
     return selectedState.state.pullRequestState
+  }
+
+  private openBypassPushProtection = (secret: ISecretScanResult) => {
+    return new Promise<IAPICreatePushProtectionBypassResponse | null>(
+      resolve => {
+        this.props.dispatcher.showPopup({
+          type: PopupType.BypassPushProtection,
+          secret,
+          bypassPushProtection: (
+            secret: ISecretScanResult,
+            reason: BypassReasonType
+          ) => {
+            this.bypassPushProtection(secret, reason)
+              .then(response => {
+                resolve(response)
+              })
+              .catch(error => {
+                resolve(null)
+                this.props.dispatcher.postError(error)
+              })
+              .finally(() => {
+                this.props.dispatcher.closePopup(PopupType.BypassPushProtection)
+              })
+          },
+          onDismissed: () => {
+            resolve(null)
+          },
+        })
+      }
+    )
+  }
+
+  private bypassPushProtection = (
+    secret: ISecretScanResult,
+    reason: BypassReasonType
+  ): Promise<IAPICreatePushProtectionBypassResponse | null> => {
+    return this.props.dispatcher.createPushProtectionBypass(
+      reason,
+      secret.id,
+      secret.bypassURL
+    )
   }
 
   private getWarnForcePushDialogOnBegin(
@@ -2583,6 +2699,8 @@ export class App extends React.Component<IAppProps, IAppState> {
   private showTermsAndConditions = () => {
     this.props.dispatcher.showPopup({ type: PopupType.TermsAndConditions })
   }
+
+  private onQuitAndInstall = () => updateStore.quitAndInstallUpdate()
 
   private renderPopups() {
     const popupContent = this.allPopupContent()
@@ -3171,23 +3289,27 @@ export class App extends React.Component<IAppProps, IAppState> {
   }
 
   private renderRepository() {
-    const state = this.state
+    const accounts = enableMultipleEnterpriseAccounts()
+      ? this.state.accounts
+      : this.oneAccountPerKind(this.state.accounts)
+
     if (this.inNoRepositoriesViewState()) {
       return (
         <NoRepositoriesView
-          dotComAccount={this.getDotComAccount()}
-          enterpriseAccount={this.getEnterpriseAccount()}
+          accounts={accounts}
           onCreate={this.showCreateRepository}
           onClone={this.showCloneRepo}
           onAdd={this.showAddLocalRepo}
           onCreateTutorialRepository={this.showCreateTutorialRepositoryPopup}
           onResumeTutorialRepository={this.onResumeTutorialRepository}
           tutorialPaused={this.isTutorialPaused()}
-          apiRepositories={state.apiRepositories}
+          apiRepositories={this.state.apiRepositories}
           onRefreshRepositories={this.onRefreshRepositories}
         />
       )
     }
+
+    const state = this.state
 
     const selectedState = state.selectedState
     if (!selectedState) {
@@ -3250,7 +3372,6 @@ export class App extends React.Component<IAppProps, IAppState> {
           showCommitLengthWarning={this.state.showCommitLengthWarning}
           onCherryPick={this.startCherryPickWithoutBranch}
           pullRequestSuggestedNextAction={state.pullRequestSuggestedNextAction}
-          canFilterChanges={state.canFilterChanges}
         />
       )
     } else if (selectedState.type === SelectionType.CloningRepository) {
@@ -3430,8 +3551,8 @@ export class App extends React.Component<IAppProps, IAppState> {
    * be able to be detected.
    */
   private async checkIfThankYouIsInOrder(): Promise<void> {
-    const dotComAccount = this.getDotComAccount()
-    if (dotComAccount === null) {
+    const dotComAccount = this.state.accounts.find(isDotComAccount)
+    if (!dotComAccount) {
       // The user is not signed in or is a GHE user who should not have any.
       return
     }
@@ -3469,7 +3590,7 @@ export class App extends React.Component<IAppProps, IAppState> {
       // Grab emoji's by reference because we could still be loading emoji's
       emoji: this.state.emoji,
       onOpenCard: () =>
-        this.openThankYouCard(userContributions, displayVersion),
+        this.openThankYouCard(userContributions, displayVersion, dotComAccount),
       onThrowCardAway: () => {
         updateLastThankYou(
           this.props.dispatcher,
@@ -3484,15 +3605,10 @@ export class App extends React.Component<IAppProps, IAppState> {
 
   private openThankYouCard = (
     userContributions: ReadonlyArray<ReleaseNote>,
-    latestVersion: string | null = null
+    latestVersion: string | null = null,
+    account: Account
   ) => {
-    const dotComAccount = this.getDotComAccount()
-
-    if (dotComAccount === null) {
-      // The user is not signed in or is a GHE user who should not have any.
-      return
-    }
-    const { friendlyName } = dotComAccount
+    const { friendlyName } = account
 
     this.props.dispatcher.showPopup({
       type: PopupType.ThankYou,

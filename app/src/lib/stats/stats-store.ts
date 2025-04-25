@@ -1,8 +1,11 @@
 import { StatsDatabase, ILaunchStats, IDailyMeasures } from './stats-database'
-import { getDotComAPIEndpoint } from '../api'
 import { getVersion } from '../../ui/lib/app-proxy'
 import { hasShownWelcomeFlow } from '../welcome'
-import { Account } from '../../models/account'
+import {
+  Account,
+  isDotComAccount,
+  isEnterpriseAccount,
+} from '../../models/account'
 import { getOS } from '../get-os'
 import { Repository } from '../../models/repository'
 import { merge } from '../../lib/merge'
@@ -235,10 +238,17 @@ const DefaultDailyMeasures: IDailyMeasures = {
   submoduleDiffViewedFromHistoryCount: 0,
   openSubmoduleFromDiffCount: 0,
   previewedPullRequestCount: 0,
+  typedInChangesFilterCount: 0,
+  appliesIncludedInCommitFilterCount: 0,
+  adjustedFiltersForHiddenChangesCount: 0,
+  enterpriseAccountCount: 0,
+  generateCommitMessageButtonClickCount: 0,
+  generateCommitMessageCount: 0,
+  generateCommitMessageUsedVerbatimCount: 0,
 }
 
 // A subtype of IDailyMeasures filtered to contain only its numeric properties
-type NumericMeasures = {
+export type NumericMeasures = {
   [P in keyof IDailyMeasures as IDailyMeasures[P] extends number
     ? P
     : never]: IDailyMeasures[P]
@@ -413,13 +423,7 @@ type DailyStats = ICalculatedStats &
  *
  */
 export interface IStatsStore {
-  increment: (
-    metric:
-      | 'mergeAbortedAfterConflictsCount'
-      | 'rebaseAbortedAfterConflictsCount'
-      | 'mergeSuccessAfterConflictsCount'
-      | 'rebaseSuccessAfterConflictsCount'
-  ) => void
+  increment: (k: keyof NumericMeasures, n?: number) => Promise<void>
 }
 
 const defaultPostImplementation = (body: Record<string, any>) =>
@@ -663,16 +667,10 @@ export class StatsStore implements IStatsStore {
 
   /** Determines if an account is a dotCom and/or enterprise user */
   private determineUserType(accounts: ReadonlyArray<Account>) {
-    const dotComAccount = !!accounts.find(
-      a => a.endpoint === getDotComAPIEndpoint()
-    )
-    const enterpriseAccount = !!accounts.find(
-      a => a.endpoint !== getDotComAPIEndpoint()
-    )
-
     return {
-      dotComAccount,
-      enterpriseAccount,
+      dotComAccount: accounts.some(isDotComAccount),
+      enterpriseAccount: accounts.some(isEnterpriseAccount),
+      enterpriseAccountCount: accounts.filter(isEnterpriseAccount).length,
     }
   }
 
@@ -808,13 +806,10 @@ export class StatsStore implements IStatsStore {
     return this.optOut
   }
 
-  public async recordPush(
-    githubAccount: Account | null,
-    options?: PushOptions
-  ) {
-    if (githubAccount === null) {
+  public async recordPush(account: Account | null, options?: PushOptions) {
+    if (account === null) {
       await this.recordPushToGenericRemote(options)
-    } else if (githubAccount.endpoint === getDotComAPIEndpoint()) {
+    } else if (isDotComAccount(account)) {
       await this.recordPushToGitHub(options)
     } else {
       await this.recordPushToGitHubEnterprise(options)
@@ -987,9 +982,6 @@ export class StatsStore implements IStatsStore {
       ])
     }
   }
-
-  public recordTagCreated = (numCreatedTags: number) =>
-    this.increment('tagsCreated', numCreatedTags)
 
   private recordSquashUndone = () => this.increment('squashUndoneCount')
 
