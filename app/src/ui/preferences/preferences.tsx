@@ -42,11 +42,41 @@ import { Prompts } from './prompts'
 import { Repository } from '../../models/repository'
 import { Notifications } from './notifications'
 import { Accessibility } from './accessibility'
+import type { ModelInfo } from '@github/copilot-sdk'
+import { CopilotPreferences } from './copilot'
+import type {
+  CopilotFeature,
+  CopilotModelSelections,
+} from '../../lib/stores/copilot-store'
 import {
   ICustomIntegration,
   TargetPathArgument,
   isValidCustomIntegration,
 } from '../../lib/custom-integration'
+import {
+  defaultGitHookEnvShell,
+  defaultHooksEnvEnabledValue,
+  getCacheHooksEnv,
+  getGitHookEnvShell,
+  getHooksEnvEnabled,
+  setCacheHooksEnv,
+  setGitHookEnvShell,
+  setHooksEnvEnabled,
+} from '../../lib/hooks/config'
+import { enableCopilotSdkCommitMessageGeneration } from '../../lib/feature-flag'
+import {
+  DateFormat,
+  TimeFormat,
+  INumberFormat,
+  getPreferAbsoluteDates,
+  getDateFormatPreference,
+  getTimeFormatPreference,
+  getNumberFormatPreference,
+  setDateFormatPreference,
+  setTimeFormatPreference,
+  setNumberFormatPreference,
+} from '../../models/formatting-preferences'
+import { enableFormattingPreferences } from '../../lib/feature-flag'
 
 interface IPreferencesProps {
   readonly dispatcher: Dispatcher
@@ -67,6 +97,7 @@ interface IPreferencesProps {
   readonly confirmForcePush: boolean
   readonly confirmUndoCommit: boolean
   readonly askForConfirmationOnCommitFilteredChanges: boolean
+  readonly confirmCommitMessageOverride: boolean
   readonly uncommittedChangesStrategy: UncommittedChangesStrategy
   readonly selectedExternalEditor: string | null
   readonly selectedShell: Shell
@@ -80,6 +111,9 @@ interface IPreferencesProps {
   readonly onEditGlobalGitConfig: () => void
   readonly underlineLinks: boolean
   readonly showDiffCheckMarks: boolean
+  readonly selectedCopilotModels: CopilotModelSelections
+  readonly copilotModels: ReadonlyArray<ModelInfo> | null
+  readonly copilotAvailable: boolean
 }
 
 interface IPreferencesState {
@@ -104,6 +138,7 @@ interface IPreferencesState {
   readonly confirmForcePush: boolean
   readonly confirmUndoCommit: boolean
   readonly askForConfirmationOnCommitFilteredChanges: boolean
+  readonly confirmCommitMessageOverride: boolean
   readonly uncommittedChangesStrategy: UncommittedChangesStrategy
   readonly availableEditors: ReadonlyArray<string>
   readonly useCustomEditor: boolean
@@ -132,6 +167,19 @@ interface IPreferencesState {
   readonly underlineLinks: boolean
 
   readonly showDiffCheckMarks: boolean
+
+  readonly selectedGitTabIndex?: number
+  readonly enableGitHookEnv: boolean | undefined
+  readonly cacheGitHookEnv: boolean | undefined
+  readonly selectedGitHookEnvShell: string | undefined
+  // Whether the preferences related to Git hooks environment have been changed
+  readonly hooksPreferencesDirty: boolean
+
+  readonly selectedCopilotModels: CopilotModelSelections
+  readonly selectedDateFormat?: DateFormat
+  readonly selectedTimeFormat?: TimeFormat
+  readonly selectedNumberFormat?: INumberFormat
+  readonly preferAbsoluteDates?: boolean
 }
 
 /**
@@ -179,6 +227,7 @@ export class Preferences extends React.Component<
       confirmForcePush: false,
       confirmUndoCommit: false,
       askForConfirmationOnCommitFilteredChanges: false,
+      confirmCommitMessageOverride: true,
       uncommittedChangesStrategy: defaultUncommittedChangesStrategy,
       selectedExternalEditor: this.props.selectedExternalEditor,
       availableShells: [],
@@ -189,6 +238,15 @@ export class Preferences extends React.Component<
       isLoadingGitConfig: true,
       underlineLinks: this.props.underlineLinks,
       showDiffCheckMarks: this.props.showDiffCheckMarks,
+      enableGitHookEnv: getHooksEnvEnabled(),
+      cacheGitHookEnv: getCacheHooksEnv(),
+      selectedGitHookEnvShell: getGitHookEnvShell(),
+      hooksPreferencesDirty: false,
+      selectedCopilotModels: this.props.selectedCopilotModels,
+      selectedDateFormat: getDateFormatPreference(),
+      selectedTimeFormat: getTimeFormatPreference(),
+      selectedNumberFormat: getNumberFormatPreference(),
+      preferAbsoluteDates: getPreferAbsoluteDates(),
     }
   }
 
@@ -223,6 +281,11 @@ export class Preferences extends React.Component<
       getAvailableShells(),
     ])
 
+    // Kick off Copilot model list fetch (non-blocking)
+    if (this.isCopilotSdkEnabled) {
+      this.props.dispatcher.fetchCopilotModels()
+    }
+
     const availableEditors = editors.map(e => e.editor) ?? null
     const availableShells = shells.map(e => e.shell) ?? null
 
@@ -248,6 +311,7 @@ export class Preferences extends React.Component<
       confirmUndoCommit: this.props.confirmUndoCommit,
       askForConfirmationOnCommitFilteredChanges:
         this.props.askForConfirmationOnCommitFilteredChanges,
+      confirmCommitMessageOverride: this.props.confirmCommitMessageOverride,
       uncommittedChangesStrategy: this.props.uncommittedChangesStrategy,
       availableShells,
       availableEditors,
@@ -282,7 +346,7 @@ export class Preferences extends React.Component<
           {this.renderDisallowedCharactersError()}
           <TabBar
             onTabClicked={this.onTabClicked}
-            selectedIndex={this.state.selectedIndex}
+            selectedIndex={this.tabToVisualIndex(this.state.selectedIndex)}
             type={TabBarType.Vertical}
           >
             <span id={this.getTabId(PreferencesTab.Accounts)}>
@@ -293,6 +357,12 @@ export class Preferences extends React.Component<
               <Octicon className="icon" symbol={octicons.person} />
               Integrations
             </span>
+            {this.isCopilotSdkEnabled && (
+              <span id={this.getTabId(PreferencesTab.Copilot)}>
+                <Octicon className="icon" symbol={octicons.copilot} />
+                Copilot
+              </span>
+            )}
             <span id={this.getTabId(PreferencesTab.Git)}>
               <Octicon className="icon" symbol={octicons.gitCommit} />
               Git
@@ -334,6 +404,9 @@ export class Preferences extends React.Component<
         break
       case PreferencesTab.Integrations:
         suffix = 'integrations'
+        break
+      case PreferencesTab.Copilot:
+        suffix = 'copilot'
         break
       case PreferencesTab.Git:
         suffix = 'git'
@@ -383,6 +456,25 @@ export class Preferences extends React.Component<
     }
   }
 
+  private onSelectedGitTabIndexChanged = (index: number) => {
+    this.setState({ selectedGitTabIndex: index })
+  }
+
+  private onEnableGitHookEnvChanged = (enableGitHookEnv: boolean) => {
+    this.setState({ enableGitHookEnv, hooksPreferencesDirty: true })
+  }
+
+  private onCacheGitHookEnvChanged = (cacheGitHookEnv: boolean) => {
+    this.setState({ cacheGitHookEnv, hooksPreferencesDirty: true })
+  }
+
+  private onSelectedGitHookEnvShellChanged = (selectedShell: string) => {
+    this.setState({
+      selectedGitHookEnvShell: selectedShell,
+      hooksPreferencesDirty: true,
+    })
+  }
+
   private renderActiveTab() {
     const index = this.state.selectedIndex
     let View
@@ -418,6 +510,16 @@ export class Preferences extends React.Component<
         )
         break
       }
+      case PreferencesTab.Copilot:
+        View = (
+          <CopilotPreferences
+            selectedCopilotModels={this.state.selectedCopilotModels}
+            copilotModels={this.props.copilotModels}
+            copilotAvailable={this.props.copilotAvailable}
+            onSelectedCopilotModelChanged={this.onSelectedCopilotModelChanged}
+          />
+        )
+        break
       case PreferencesTab.Git: {
         const { existingLockFilePath } = this.state
         const error =
@@ -444,6 +546,18 @@ export class Preferences extends React.Component<
               onDefaultBranchChanged={this.onDefaultBranchChanged}
               isLoadingGitConfig={this.state.isLoadingGitConfig}
               onEditGlobalGitConfig={this.props.onEditGlobalGitConfig}
+              selectedTabIndex={this.state.selectedGitTabIndex}
+              onSelectedTabIndexChanged={this.onSelectedGitTabIndexChanged}
+              onEnableGitHookEnvChanged={this.onEnableGitHookEnvChanged}
+              onCacheGitHookEnvChanged={this.onCacheGitHookEnvChanged}
+              onSelectedShellChanged={this.onSelectedGitHookEnvShellChanged}
+              enableGitHookEnv={
+                this.state.enableGitHookEnv ?? defaultHooksEnvEnabledValue
+              }
+              cacheGitHookEnv={this.state.cacheGitHookEnv ?? true}
+              selectedShell={
+                this.state.selectedGitHookEnvShell ?? defaultGitHookEnvShell
+              }
             />
           </>
         )
@@ -456,6 +570,22 @@ export class Preferences extends React.Component<
             onSelectedThemeChanged={this.onSelectedThemeChanged}
             selectedTabSize={this.props.selectedTabSize}
             onSelectedTabSizeChanged={this.onSelectedTabSizeChanged}
+            selectedDateFormat={
+              this.state.selectedDateFormat ?? getDateFormatPreference()
+            }
+            onSelectedDateFormatChanged={this.onSelectedDateFormatChanged}
+            selectedTimeFormat={
+              this.state.selectedTimeFormat ?? getTimeFormatPreference()
+            }
+            onSelectedTimeFormatChanged={this.onSelectedTimeFormatChanged}
+            selectedNumberFormat={
+              this.state.selectedNumberFormat ?? getNumberFormatPreference()
+            }
+            onSelectedNumberFormatChanged={this.onSelectedNumberFormatChanged}
+            preferAbsoluteDates={
+              this.state.preferAbsoluteDates ?? getPreferAbsoluteDates()
+            }
+            onPreferAbsoluteDatesChanged={this.onPreferAbsoluteDatesChanged}
           />
         )
         break
@@ -482,6 +612,9 @@ export class Preferences extends React.Component<
             askForConfirmationOnCommitFilteredChanges={
               this.state.askForConfirmationOnCommitFilteredChanges
             }
+            confirmCommitMessageOverride={
+              this.state.confirmCommitMessageOverride
+            }
             onConfirmRepositoryRemovalChanged={
               this.onConfirmRepositoryRemovalChanged
             }
@@ -495,6 +628,9 @@ export class Preferences extends React.Component<
             onConfirmUndoCommitChanged={this.onConfirmUndoCommitChanged}
             onAskForConfirmationOnCommitFilteredChanges={
               this.onAskForConfirmationOnCommitFilteredChanges
+            }
+            onConfirmCommitMessageOverrideChanged={
+              this.onConfirmCommitMessageOverrideChanged
             }
             uncommittedChangesStrategy={this.state.uncommittedChangesStrategy}
             onUncommittedChangesStrategyChanged={
@@ -620,6 +756,10 @@ export class Preferences extends React.Component<
     this.setState({ askForConfirmationOnCommitFilteredChanges: value })
   }
 
+  private onConfirmCommitMessageOverrideChanged = (value: boolean) => {
+    this.setState({ confirmCommitMessageOverride: value })
+  }
+
   private onUncommittedChangesStrategyChanged = (
     uncommittedChangesStrategy: UncommittedChangesStrategy
   ) => {
@@ -651,6 +791,24 @@ export class Preferences extends React.Component<
     this.setState({ selectedShell: shell })
   }
 
+  private onSelectedDateFormatChanged = (selectedDateFormat: DateFormat) => {
+    this.setState({ selectedDateFormat })
+  }
+
+  private onSelectedTimeFormatChanged = (selectedTimeFormat: TimeFormat) => {
+    this.setState({ selectedTimeFormat })
+  }
+
+  private onSelectedNumberFormatChanged = (
+    selectedNumberFormat: INumberFormat
+  ) => {
+    this.setState({ selectedNumberFormat })
+  }
+
+  private onPreferAbsoluteDatesChanged = (preferAbsoluteDates: boolean) => {
+    this.setState({ preferAbsoluteDates })
+  }
+
   private onUseCustomEditorChanged = (useCustomEditor: boolean) => {
     this.setState({ useCustomEditor })
   }
@@ -677,6 +835,21 @@ export class Preferences extends React.Component<
 
   private onShowDiffCheckMarksChanged = (showDiffCheckMarks: boolean) => {
     this.setState({ showDiffCheckMarks })
+  }
+
+  private onSelectedCopilotModelChanged = (
+    feature: CopilotFeature,
+    model: string | null
+  ) => {
+    this.setState(state => {
+      const selections = { ...state.selectedCopilotModels }
+      if (model === null) {
+        delete selections[feature]
+      } else {
+        selections[feature] = model
+      }
+      return { selectedCopilotModels: selections }
+    })
   }
 
   private onSelectedTabSizeChanged = (tabSize: number) => {
@@ -737,6 +910,20 @@ export class Preferences extends React.Component<
         dispatcher.setRepositoryIndicatorsEnabled(
           this.state.repositoryIndicatorsEnabled
         )
+      }
+
+      if (this.state.hooksPreferencesDirty) {
+        if (this.state.enableGitHookEnv !== undefined) {
+          setHooksEnvEnabled(this.state.enableGitHookEnv)
+        }
+
+        if (this.state.cacheGitHookEnv !== undefined) {
+          setCacheHooksEnv(this.state.cacheGitHookEnv)
+        }
+
+        if (this.state.selectedGitHookEnvShell !== undefined) {
+          setGitHookEnvShell(this.state.selectedGitHookEnvShell)
+        }
       }
     } catch (e) {
       if (isConfigFileLockError(e)) {
@@ -806,6 +993,9 @@ export class Preferences extends React.Component<
     await dispatcher.setConfirmCommitFilteredChanges(
       this.state.askForConfirmationOnCommitFilteredChanges
     )
+    await dispatcher.setConfirmCommitMessageOverrideSetting(
+      this.state.confirmCommitMessageOverride
+    )
 
     if (this.state.selectedExternalEditor) {
       await dispatcher.setExternalEditor(this.state.selectedExternalEditor)
@@ -826,10 +1016,50 @@ export class Preferences extends React.Component<
 
     dispatcher.setDiffCheckMarksSetting(this.state.showDiffCheckMarks)
 
+    dispatcher.setSelectedCopilotModels(this.state.selectedCopilotModels)
+
+    if (enableFormattingPreferences()) {
+      if (this.state.selectedDateFormat !== undefined) {
+        setDateFormatPreference(this.state.selectedDateFormat)
+      }
+
+      if (this.state.selectedTimeFormat !== undefined) {
+        setTimeFormatPreference(this.state.selectedTimeFormat)
+      }
+
+      if (this.state.selectedNumberFormat !== undefined) {
+        setNumberFormatPreference(this.state.selectedNumberFormat)
+      }
+
+      if (this.state.preferAbsoluteDates !== undefined) {
+        dispatcher.setPreferAbsoluteDates(this.state.preferAbsoluteDates)
+      }
+    }
+
     this.props.onDismissed()
   }
 
-  private onTabClicked = (index: number) => {
-    this.setState({ selectedIndex: index })
+  private onTabClicked = (visualIndex: number) => {
+    this.setState({ selectedIndex: this.visualIndexToTab(visualIndex) })
+  }
+
+  private get isCopilotSdkEnabled(): boolean {
+    return this.props.accounts
+      .filter(isDotComAccount)
+      .some(enableCopilotSdkCommitMessageGeneration)
+  }
+
+  private tabToVisualIndex(tab: PreferencesTab): number {
+    if (!this.isCopilotSdkEnabled && tab > PreferencesTab.Copilot) {
+      return tab - 1
+    }
+    return tab
+  }
+
+  private visualIndexToTab(index: number): PreferencesTab {
+    if (!this.isCopilotSdkEnabled && index >= PreferencesTab.Copilot) {
+      return index + 1
+    }
+    return index
   }
 }

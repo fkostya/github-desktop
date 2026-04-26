@@ -1,3 +1,5 @@
+import type { ModelInfo } from '@github/copilot-sdk'
+import type { CopilotModelSelections } from './stores/copilot-store'
 import { Account } from '../models/account'
 import { CommitIdentity } from '../models/commit-identity'
 import { IDiff, ImageDiffType } from '../models/diff'
@@ -44,7 +46,11 @@ import {
   MultiCommitOperationDetail,
   MultiCommitOperationStep,
 } from '../models/multi-commit-operation'
-import { IChangesetData } from './git'
+import type {
+  HookProgress,
+  IChangesetData,
+  TerminalOutputListener,
+} from './git'
 import { Popup } from '../models/popup'
 import { RepoRulesInfo } from '../models/repo-rules'
 import { IAPIRepoRuleset } from './api'
@@ -236,6 +242,9 @@ export interface IAppState {
   /** Should the app prompt the user to confirm they want to commit with changes are hidden by filter? */
   readonly askForConfirmationOnCommitFilteredChanges: boolean
 
+  /** Should the app prompt the user to confirm commit message override? */
+  readonly askForConfirmationOnCommitMessageOverride: boolean
+
   /** How the app should handle uncommitted changes when switching branches */
   readonly uncommittedChangesStrategy: UncommittedChangesStrategy
 
@@ -365,6 +374,9 @@ export interface IAppState {
   /** Whether or not the user will see check marks indicating a line is included in the check in the diff */
   readonly showDiffCheckMarks: boolean
 
+  /** Whether the user prefers absolute dates over relative time in lists */
+  readonly preferAbsoluteDates: boolean
+
   /**
    * Cached repo rulesets. Used to prevent repeatedly querying the same
    * rulesets to check their bypass status.
@@ -377,8 +389,25 @@ export interface IAppState {
 
   readonly commitMessageGenerationDisclaimerLastSeen: number | null
 
+  readonly commitMessageGenerationButtonClicked: boolean
+
   /** Whether the changes filter is shown */
   readonly showChangesFilter: boolean
+
+  /**
+   * Per-feature Copilot model selections. An absent key means the default
+   * model will be used for that feature.
+   */
+  readonly selectedCopilotModels: CopilotModelSelections
+
+  /**
+   * The list of available Copilot models fetched from the SDK.
+   * Null when the list has not been fetched yet.
+   */
+  readonly copilotModels: ReadonlyArray<ModelInfo> | null
+
+  /** Whether Copilot is available (i.e. a GitHub.com account is signed in). */
+  readonly copilotAvailable: boolean
 }
 
 export enum FoldoutType {
@@ -544,6 +573,9 @@ export interface IRepositoryState {
   /** The date the repository was last fetched. */
   readonly lastFetched: Date | null
 
+  readonly hookProgress: HookProgress | null
+  readonly subscribeToCommitOutput: TerminalOutputListener | null
+
   /**
    * If we're currently working on switching to a new branch this
    * provides insight into the progress of that operation.
@@ -577,7 +609,37 @@ export interface IRepositoryState {
   /** State associated with a multi commit operation such as rebase,
    * cherry-pick, squash, reorder... */
   readonly multiCommitOperationState: IMultiCommitOperationState | null
+
+  /**
+   * Whether there are any hooks in the repository that could be
+   * skipped during commit with the --no-verify flag
+   */
+  readonly hasCommitHooks: boolean
+
+  /**
+   * Whether or not to skip blocking commit hooks when creating commits
+   * by means of passing the `--no-verify` flag to git commit
+   */
+  readonly skipCommitHooks: boolean
+
+  /**
+   * Whether or not to add a `Signed-off-by` trailer to commit messages
+   * by means of passing the `--signoff` flag to git commit
+   */
+  readonly signOffCommits: boolean
+
+  /**
+   * Whether or not to allow creating a commit without any file changes
+   * by means of passing the `--allow-empty` flag to git commit.
+   * This option resets to false after each commit.
+   */
+  readonly allowEmptyCommit: boolean
 }
+
+export type CommitOptions = Pick<
+  IRepositoryState,
+  'skipCommitHooks' | 'signOffCommits' | 'allowEmptyCommit'
+>
 
 export interface IBranchesState {
   /**
@@ -769,11 +831,31 @@ export interface IChangesState {
    */
   readonly currentRepoRulesInfo: RepoRulesInfo
 
-  /** The text entered into the compare branch filter text box */
+  /** The file list filter state containing all filter options */
+  readonly fileListFilter: IFileListFilterState
+}
+
+/**
+ * State interface for file list filtering options
+ */
+export interface IFileListFilterState {
+  /** The text entered into the filter text box */
   readonly filterText: string
 
-  /** The state of the changes list filter of included changes. */
-  readonly includedChangesInCommitFilter: boolean
+  /** Whether to filter and show only included in commit files */
+  readonly isIncludedInCommit: boolean
+
+  /** Whether to filter and show only excluded from commit files */
+  readonly isExcludedFromCommit: boolean
+
+  /** Whether to filter and show only new files */
+  readonly isNewFile: boolean
+
+  /** Whether to filter and show only modified files */
+  readonly isModifiedFile: boolean
+
+  /** Whether to filter and show only deleted files */
+  readonly isDeletedFile: boolean
 }
 
 /**

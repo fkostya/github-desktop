@@ -6,11 +6,7 @@ import {
   DiscardChangesError,
   ErrorWithMetadata,
 } from '../../lib/error-with-metadata'
-import {
-  coerceToString,
-  GitError,
-  isAuthFailureError,
-} from '../../lib/git/core'
+import { GitError, isAuthFailureError } from '../../lib/git/core'
 import { ShellError } from '../../lib/shells'
 import { UpstreamAlreadyExistsError } from '../../lib/stores/upstream-already-exists-error'
 
@@ -27,6 +23,7 @@ import {
   ISecretLocation,
   ISecretScanResult,
 } from '../secret-scanning/push-protection-error-dialog'
+import { coerceToString } from '../../lib/git/coerce-to-string'
 
 /** An error which also has a code property. */
 interface IErrorWithCode extends Error {
@@ -686,6 +683,9 @@ export async function secretScanningPushProtectionErrorHandler(
 
   const remoteMessage = getRemoteMessage(coerceToString(gitError.result.stderr))
   const secrets = extractSecretScanningResults(remoteMessage)
+
+  dispatcher.incrementMetric('pushBlockedBySecretScanningCount')
+  dispatcher.incrementMetric('secretsDetectedOnPushCount', secrets.length)
 
   dispatcher.showPopup({
     type: PopupType.PushProtectionError,

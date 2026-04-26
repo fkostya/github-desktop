@@ -68,6 +68,18 @@ interface ISectionListProps {
   readonly rowRenderer: (indexPath: RowIndexPath) => JSX.Element | null
 
   /**
+   * Optional render function for the keyboard focus tooltip
+   *
+   * This is used to render a tooltip when the row is focused via keyboard
+   * navigation. This should be provided if the row has tooltip content that is
+   * only accessible via the mouse. The content in the mouse tooltip(s) will
+   * need to be in the keyboard focus tooltip as well.
+   */
+  readonly renderRowFocusTooltip?: (
+    indexPath: RowIndexPath
+  ) => JSX.Element | string | null
+
+  /**
    * Whether or not a given section has a header row at the beginning. When
    * ommitted, it's assumed the section does NOT have a header row.
    */
@@ -1221,6 +1233,12 @@ export class SectionList extends React.Component<
           children={element}
           selectable={selectable}
           className={customClasses}
+          renderRowFocusTooltip={this.props.renderRowFocusTooltip}
+          hasKeyboardFocus={
+            this.focusRow !== InvalidRowIndexPath &&
+            this.focusRow.section === section &&
+            this.focusRow.row === indexPath.row
+          }
         />
       )
     }
@@ -1493,14 +1511,19 @@ export class SectionList extends React.Component<
 
     this.lastScroll = 'fake'
 
-    if (this.rootGrid) {
-      const element = ReactDOM.findDOMNode(this.rootGrid)
-      if (element instanceof Element) {
-        element.scrollTop = e.currentTarget.scrollTop
-      }
-    }
+    const scrollTop = e.currentTarget.scrollTop
 
-    this.setState({ scrollTop: e.currentTarget.scrollTop })
+    // Use scrollToPosition instead of directly setting element.scrollTop.
+    // Direct DOM mutation doesn't properly update react-virtualized's internal
+    // state, which can cause rows to not render correctly after keyboard
+    // navigation followed by scrollbar dragging.
+    // See https://github.com/desktop/desktop/issues/21940
+    this.rootGrid?.scrollToPosition({
+      scrollLeft: 0,
+      scrollTop,
+    })
+
+    this.setState({ scrollTop })
 
     // Make sure the root grid re-renders its children
     this.rootGrid?.recomputeGridSize()

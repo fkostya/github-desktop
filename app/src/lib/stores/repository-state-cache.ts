@@ -318,8 +318,14 @@ function getInitialRepositoryState(): IRepositoryState {
       stashEntry: null,
       currentBranchProtected: false,
       currentRepoRulesInfo: new RepoRulesInfo(),
-      filterText: '',
-      includedChangesInCommitFilter: false,
+      fileListFilter: {
+        filterText: '',
+        isIncludedInCommit: false,
+        isNewFile: false,
+        isModifiedFile: false,
+        isDeletedFile: false,
+        isExcludedFromCommit: false,
+      },
     },
     selectedSection: RepositorySectionTab.Changes,
     branchesState: {
@@ -357,6 +363,8 @@ function getInitialRepositoryState(): IRepositoryState {
     remote: null,
     isPushPullFetchInProgress: false,
     isCommitting: false,
+    hookProgress: null,
+    subscribeToCommitOutput: null,
     isGeneratingCommitMessage: false,
     commitToAmend: null,
     lastFetched: null,
@@ -365,5 +373,9 @@ function getInitialRepositoryState(): IRepositoryState {
     revertProgress: null,
     multiCommitOperationUndoState: null,
     multiCommitOperationState: null,
+    hasCommitHooks: false,
+    skipCommitHooks: false,
+    signOffCommits: false,
+    allowEmptyCommit: false,
   }
 }

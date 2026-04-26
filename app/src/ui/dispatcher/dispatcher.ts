@@ -1,4 +1,4 @@
-import { Disposable, DisposableLike } from 'event-kit'
+import { Disposable } from 'event-kit'
 
 import {
   IAPIOrganization,
@@ -22,6 +22,7 @@ import {
   CherryPickConflictState,
   MultiCommitOperationConflictState,
   IMultiCommitOperationState,
+  CommitOptions,
 } from '../../lib/app-state'
 import { assertNever, fatalError } from '../../lib/fatal-error'
 import {
@@ -49,6 +50,10 @@ import {
 import { Shell } from '../../lib/shells'
 import { ILaunchStats, StatsStore } from '../../lib/stats'
 import { AppStore } from '../../lib/stores/app-store'
+import type {
+  CopilotFeature,
+  CopilotModelSelections,
+} from '../../lib/stores/copilot-store'
 import { RepositoryStateCache } from '../../lib/stores/repository-state-cache'
 import { getTipSha } from '../../lib/tip'
 
@@ -219,6 +224,13 @@ export class Dispatcher {
     missing: boolean
   ): Promise<Repository> {
     return this.appStore._updateRepositoryMissing(repository, missing)
+  }
+
+  public updateCommitOptions(
+    repository: Repository,
+    options: Partial<CommitOptions>
+  ) {
+    this.appStore._updateCommitOptions(repository, options)
   }
 
   /** Load the next batch of history for the repository. */
@@ -399,7 +411,7 @@ export class Dispatcher {
   /**
    * Close the popup with given id.
    */
-  public closePopupById(popupId: string) {
+  public closePopupById(popupId: number) {
     return this.appStore._closePopupById(popupId)
   }
 
@@ -1473,6 +1485,21 @@ export class Dispatcher {
   }
 
   /**
+   * Opens a path in a selected external editor without changing preferences.
+   */
+  public async openInSelectedExternalEditor(
+    fullPath: string,
+    selectedEditor: string | null,
+    customEditor: ICustomIntegration | null
+  ): Promise<void> {
+    return this.appStore._openInSelectedExternalEditor(
+      fullPath,
+      selectedEditor,
+      customEditor
+    )
+  }
+
+  /**
    * Persist the given content to the repository's root .gitignore.
    *
    * If the repository root doesn't contain a .gitignore file one
@@ -2466,6 +2493,10 @@ export class Dispatcher {
     return this.appStore._setConfirmCommitFilteredChanges(value)
   }
 
+  public setConfirmCommitMessageOverrideSetting(value: boolean) {
+    return this.appStore._setConfirmCommitMessageOverrideSetting(value)
+  }
+
   /**
    * Converts a local repository to use the given fork
    * as its default remote and associated `GitHubRepository`.
@@ -2558,7 +2589,7 @@ export class Dispatcher {
     ref: string,
     callback: StatusCallBack,
     branchName?: string
-  ): DisposableLike {
+  ): Disposable {
     return this.commitStatusStore.subscribe(
       repository,
       ref,
@@ -3991,6 +4022,10 @@ export class Dispatcher {
     return this.appStore._updateShowDiffCheckMarks(diffCheckMarks)
   }
 
+  public setPreferAbsoluteDates(value: boolean) {
+    return this.appStore._setPreferAbsoluteDates(value)
+  }
+
   public testPruneBranches() {
     return this.appStore._testPruneBranches()
   }
@@ -4004,11 +4039,36 @@ export class Dispatcher {
   }
   public setIncludedChangesInCommitFilter(
     repository: Repository,
-    includedChangesInCommitFilter: boolean
+    isIncludedInCommit: boolean
   ) {
     return this.appStore._setIncludedChangesInCommitFilter(
       repository,
-      includedChangesInCommitFilter
+      isIncludedInCommit
+    )
+  }
+
+  public setFilterNewFiles(repository: Repository, isNewFile: boolean) {
+    return this.appStore._setFilterNewFiles(repository, isNewFile)
+  }
+
+  public setFilterModifiedFiles(
+    repository: Repository,
+    isModifiedFile: boolean
+  ) {
+    return this.appStore._setFilterModifiedFiles(repository, isModifiedFile)
+  }
+
+  public setFilterDeletedFiles(repository: Repository, isDeletedFile: boolean) {
+    return this.appStore._setFilterDeletedFiles(repository, isDeletedFile)
+  }
+
+  public setFilterExcludedFiles(
+    repository: Repository,
+    isExcludedFromCommit: boolean
+  ) {
+    return this.appStore._setFilterExcludedFiles(
+      repository,
+      isExcludedFromCommit
     )
   }
 
@@ -4026,5 +4086,23 @@ export class Dispatcher {
 
   public toggleChangesFilterVisibility() {
     this.appStore._toggleChangesFilterVisibility()
+  }
+
+  /** Set the selected Copilot model for a specific feature. */
+  public setSelectedCopilotModel(
+    feature: CopilotFeature,
+    model: string | null
+  ) {
+    return this.appStore._setSelectedCopilotModel(feature, model)
+  }
+
+  /** Replace all per-feature Copilot model selections at once. */
+  public setSelectedCopilotModels(models: CopilotModelSelections) {
+    return this.appStore._setSelectedCopilotModels(models)
+  }
+
+  /** Fetch the list of available Copilot models from the SDK. */
+  public fetchCopilotModels(): Promise<void> {
+    return this.appStore._fetchCopilotModels()
   }
 }
